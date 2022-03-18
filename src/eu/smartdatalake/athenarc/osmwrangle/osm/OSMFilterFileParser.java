@@ -30,7 +30,7 @@ import java.util.Set;
  * Created by: Merten Peetz, 2017
  * Modified: 31/5/2018 by Kostas Patroumpas; included method for providing the set of all identified categories
  * Modified: 15/6/2018 by Kostas Patroumpas; included method for providing the set of all identified tags
- * Last modified by: Kostas Patroumpas, 2/5/2019
+ * Last modified by: Kostas Patroumpas, 15/6/2018
  */
 
 public class OSMFilterFileParser {
@@ -213,7 +213,7 @@ public class OSMFilterFileParser {
 		// Use default file or customized file
 		InputStreamReader reader;
 		if(filename == null) {
-			InputStream stream = getClass().getResourceAsStream("/filters.yml");
+			InputStream stream = getClass().getResourceAsStream("/filters.txt");
 			if(stream == null) {
 				return null;
 			}

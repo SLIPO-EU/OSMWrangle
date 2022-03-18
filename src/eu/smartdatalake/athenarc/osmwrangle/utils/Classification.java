@@ -1,5 +1,5 @@
 /*
- * @(#) Classification.java 	 version 1.8  30/4/2019
+ * @(#) Classification.java 	 version 2.0  25/10/2019
  *
  * Copyright (C) 2013-2019 Information Management Systems Institute, Athena R.C., Greece.
  *
@@ -21,8 +21,11 @@ package eu.smartdatalake.athenarc.osmwrangle.utils;
 
 import java.io.BufferedReader;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.io.Reader;
 import java.util.HashMap;
 import java.util.Map;
@@ -30,29 +33,40 @@ import java.util.Map;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVParser;
 import org.apache.commons.csv.CSVRecord;
-
+import org.apache.commons.lang3.tuple.Pair;
+import org.apache.jena.riot.Lang;
+import org.apache.jena.riot.system.StreamRDF;
+import org.apache.jena.riot.system.StreamRDFWriter;
 
 /**
- * Parser for a (possibly multi-tier, hierarchical) classification scheme (category/subcategory/...). 
- * ASSUMPTION: Each category (at any level) must have a unique name, which is being used as its key the derived dictionary.
+ * Parser for a (possibly multi-tier, i.e., hierarchical) classification scheme (category/subcategory/...). 
+ * ASSUMPTION: Each category (at any level) must have a unique name, which is being used as its key in the derived dictionary.
  * @author Kostas Patroumpas
- * @version 1.8
+ * @version 2.0
  */
 
 /* DEVELOPMENT HISTORY
  * Created by: Kostas Patroumpas, 7/11/2017
  * Modified: 1/2/2018, included auto-generation of universally unique identifiers (UUID) to be used in the URIs of categories
- * Modified: 7/2/2018, supported export of classification scheme
+ * Modified: 7/2/2018, supported export of classification scheme into RDF triples (modes: GRAPH, RML)
  * Modified: 15/2/2018; distinguishing whether the classification scheme is based on identifiers or names of categories
  * Modified: 2/5/2018; supported export of classification scheme into RDF triples in STREAM mode
- * Last modified by: Kostas Patroumpas, 30/4/2019
+ * Modified: 11/12/2018; added mapping to an embedded category using a default classification scheme
+ * Modified: 23/10/2019; also report the number of tiers in the classification hierarchy
+ * Last modified by: Kostas Patroumpas, 25/10/2019
  */
 
 public class Classification {
 	
+	Converter myConverter;                        //Instantiation of Converter class used in the transformation of a classification scheme to RDF
 	Assistant myAssistant;
+	EmbeddedClassifier myEmbeddedClassifier;
+	private String outputFile;                    //Output RDF file
+	private Configuration currentConfig;          //User-specified configuration settings
+	private boolean classifyByName;               //Whether data features specify their category based on its identifier in the classification scheme (false) or the actual name of the category (true). 	
+	private int numTiers;  //Number of tiers (i.e. levels in the hierarchy) identified in the given classification scheme
 	
-	//FIXME: Constraints in file specifications of classification schemes
+	//CAUTION! Hard constraints in file specifications of classification schemes
 	private static final int MAX_LEVELS = 10;     //Maximum depth (number of levels) in classification hierarchy
 	private String splitter = "#";                //Character used to separate category name from its identifier in YML specifications
 	private char indent = ' ';                    //Character used for indentation in YML file: a PAIR of such same characters is used to mark levels in the hierarchy
@@ -66,15 +80,19 @@ public class Classification {
 	 * Auxiliary dictionary for searching the artificial UUID (value) of a given original category identifier (key).
 	 */
 	public Map<String, String> categoryUUIDs = new HashMap<String, String>();  
+
 	
 	/**
-	 * Constructor of the classification hierarchy representation
+	 * Constructor of the classification hierarchy representation used for testing its validity
 	 * @param classFile  Input file (CSV or YML) containing the user-specified classification scheme.
-	 * @param outFile  Output file containing the RDF triples resulted from transformation of the classification scheme.
+	 * @param classifyFlag  Boolean value: True, if the actual name of the category is used in the hierarchy; False, if identifiers are used instead.
 	 */
-	public Classification(String classFile, String outFile) {
+	public Classification(String classFile, boolean classifyFlag) {
 		
 		myAssistant = new Assistant();
+		myEmbeddedClassifier = new EmbeddedClassifier();
+		classifyByName = classifyFlag;
+		numTiers = 0;
 
 		//Depending on the type of the file containing hierarchy of categories, call the respective parser
 		if (classFile.endsWith(".yml"))
@@ -86,7 +104,42 @@ public class Classification {
 			System.err.println("ERROR: Valid classification hierarchies must be stored in YML or CSV files.");
 			System.exit(1);                              //Issue signal to the operation system that execution terminated abnormally
 		}
-
+		
+	}
+	
+	
+	/**
+	 * Constructor of the classification hierarchy representation to be used in transformation
+	 * @param config  User-specified configuration for the transformation process.
+	 * @param classFile  Input file (CSV or YML) containing the user-specified classification scheme.
+	 * @param outFile  Output file containing the RDF triples resulted from transformation of the classification scheme.
+	 */
+	public Classification(Configuration config, String classFile, String outFile) {
+		
+		myAssistant = new Assistant();
+		myEmbeddedClassifier = new EmbeddedClassifier();
+		currentConfig = config;
+		outputFile = outFile;     //Path to the (YML or CSV) file where classification hierarchy is stored; this path must be included in the configuration settings	
+		classifyByName = currentConfig.classifyByName;   //Assign value from the user-specified setting
+		numTiers = 0;
+		
+		//Depending on the type of the file containing hierarchy of categories, call the respective parser
+		if (classFile.endsWith(".yml"))
+			this.parseYMLFile(classFile);    //Parse the YML file 
+		else if (classFile.endsWith(".csv"))
+			this.parseCSVFile(classFile);    //Parse the CSV file
+		else
+		{
+			System.err.println("ERROR: Valid classification hierarchies must be stored in YML or CSV files.");
+			System.exit(1);                              //Issue signal to the operation system that execution terminated abnormally
+		}
+		
+		//Once the classification scheme has been constructed, apply transformation to RDF
+		if (currentConfig.mode.contains("STREAM"))
+		{	//Mode STREAM: Apply a custom mapping specified in YML in order to produce triples
+			myConverter = new OsmRdfCsvStreamConverter(currentConfig, myAssistant, outputFile);
+			executeParser4Stream();
+		}
 	}
 	
 	
@@ -144,17 +197,22 @@ public class Classification {
 				String id = parts[1].replace(splitter.charAt(0),' ').trim();
 				String name = parts[0].replace(indent, ' ').trim();
 				
+				//Determine its most similar category according to the embedded (default) classification scheme
+				Pair<String, Double> embedCategoryAssignment = myEmbeddedClassifier.assignCategory(name);
+				String embeddedCategory = embedCategoryAssignment.getLeft();
+				double emdeddedScore = embedCategoryAssignment.getRight();
+				
 				//CAUTION! On-the-fly generation of a UUID for this category
 				String uuid = myAssistant.getUUID(id+name).toString();
 				
-//				System.out.println("KEY:" +  id + " CATEGORY: *" + name);
+//				System.out.println("KEY:" +  id + " CATEGORY: *" + name + "*" + " -> " + embeddedCategory);
 				
 				// Add to top tier
 				if (level == 0) {
 					//Create a new category
-					Category category = new Category(uuid, id, name, "");      //No parent category
-					categories.put(name, category);                            //Use name of category as key when searching
-					categoryUUIDs.put(id, uuid);                               //Use original identifier as key for searching 
+					Category category = new Category(uuid, id, name, "", embeddedCategory, emdeddedScore);      //No parent category
+					categories.put(name, category);                                              //Use name of category as key when searching
+					categoryUUIDs.put(id, uuid);                                                 //Use original identifier as key for searching 
 					
 					// Check for identifier
 					if(id.isEmpty()) {
@@ -176,9 +234,16 @@ public class Classification {
 				}
 				
 //				System.out.println(" PARENT KEY:" + parent.getId() + " -> " + parent.getName());
+				
+				//If similarity score is lower than the one of its parent, then use the assignment of its parent
+				if (parent.getEmbedScore() > emdeddedScore)
+				{
+					embeddedCategory = parent.getEmbedCategory();
+					emdeddedScore = parent.getEmbedScore();		
+				}
 								
 				//Create a new category
-				Category category = new Category(uuid, id, name, parent.getId());
+				Category category = new Category(uuid, id, name, parent.getId(), embeddedCategory, emdeddedScore);
 				
 				// Check if valid
 				if (!category.hasId() && !category.hasName()) {
@@ -196,6 +261,10 @@ public class Classification {
 				categories.put(name, category);                    //Use name of category as key when searching
 				categoryUUIDs.put(id, uuid);                       //Use original identifier as key for searching 
 				categoryLevels[level] = category;
+				
+				// Update the number of tiers identified so far
+				if (level > numTiers)
+					numTiers = level;
 			}
 			buf.close();   //Close input file
 			
@@ -210,6 +279,7 @@ public class Classification {
 			System.exit(1);                              //Issue signal to the operation system that execution terminated abnormally
 		}
 		
+		numTiers++;   //top-tier is level 0; so the number of levels must be incremented
 		System.out.println("Classification hierarchy reconstructed from YML file.");			
 	}
 	
@@ -229,6 +299,7 @@ public class Classification {
 		
 		String id;
 		String name;
+		Pair<String, Double> embedCategoryAssignment;
 		
 		System.out.println("Starting processing of CSV file with classification hierarchy...");
 		
@@ -244,6 +315,10 @@ public class Classification {
 			{
 				numRecs++;
 				String parent = "";
+				String parentCategory = "";
+				double parentScore = 0.0;
+				String embeddedCategory = "";
+				double emdeddedScore = 0.0;
 				level = 0;
 				for (int i=0; i < rec.size(); i+=2)
 				{
@@ -252,16 +327,37 @@ public class Classification {
 						level++;
 						
 						//Get pairs of attribute values (ID, NAME) from the input record
-						id = rec.get(i).trim();         //The identifier of the category is used as join attribute in the data records
-						name = rec.get(i+1).trim();	
+						//Also determine its most similar category according to the embedded (default) classification scheme
+						if (!classifyByName)
+						{
+							name = rec.get(i).trim();
+							id = rec.get(i+1).trim();	    //The description of the category is used as join attribute in the data records
+							embedCategoryAssignment = myEmbeddedClassifier.assignCategory(id);
+						}
+						else
+						{
+							id = rec.get(i).trim();         //The identifier of the category is used as join attribute in the data records
+							name = rec.get(i+1).trim();	
+							embedCategoryAssignment = myEmbeddedClassifier.assignCategory(name);
+						}
 						
 						//CAUTION! On-the-fly generation of a UUID for this category
 						String uuid = myAssistant.getUUID(id+name).toString();
 
-						//System.out.println("KEY:" +  id + " CATEGORY: *" + name);
+						//Handle embedded categories
+						embeddedCategory = embedCategoryAssignment.getLeft();
+						emdeddedScore = embedCategoryAssignment.getRight();
 						
+						//If similarity score is lower than the one of its parent, then use the assignment of its parent  
+						if (parentScore > emdeddedScore) {
+							embeddedCategory = parentCategory;
+							emdeddedScore = parentScore;
+						}
+						
+//						System.out.println("KEY:" +  id + " CATEGORY: *" + name + "*" + " -> " + embeddedCategory);
+
 						//Create a new category
-						Category category = new Category(uuid, id, name, parent);
+						Category category = new Category(uuid, id, name, parent, embeddedCategory, emdeddedScore); 
 
 						// Check if valid
 						if (!category.hasId() || !category.hasName()) {
@@ -275,7 +371,10 @@ public class Classification {
 							System.exit(1);                              //Issue signal to the operation system that execution terminated abnormally
 						}
 						
-						parent = id;        //Current category will be the parent of the one at the next level
+						//Current category will become the parent of the one at the next (lower) level
+						parent = id;        
+						parentCategory = embeddedCategory;
+						parentScore = emdeddedScore;
 						
 						//Append this category if it does not already exist in the dictionary
 						if (categories.containsKey(name))
@@ -285,15 +384,10 @@ public class Classification {
 						//Otherwise, add category to the classification
 						categories.put(name, category);                    //Use name of category as key when searching
 						categoryUUIDs.put(id, uuid);                       //Use original identifier as key for searching 
-/*													
-						//OPTION to print categories in a YML-like fashion:
-						for (int k=1; k < level; k++)
-						{  //Indentation character depending on the level
-							System.out.print(indent);     //Two blank characters
-							System.out.print(indent);   
-						}
-						System.out.println(name + " " + splitter + id);	         //Special character before identifier
-*/				
+						
+						// Update the number of tiers identified so far
+						if (level > numTiers)
+							numTiers = level;			
 					}
 				}		
 			}
@@ -316,16 +410,31 @@ public class Classification {
 	
 	/**
 	 * For a given category name, finds the respective entry in the classification scheme
-	 * @param categoryName  The category name to search in the classification hierarchy. Category names must be unique amongst all levels.
+	 * @param categoryName  The category name to search in the classification hierarchy. CUATION! Category names must be unique amongst all levels and are used as keys.
 	 * @return  The entry in the classification scheme representation corresponding to the given category
 	 */
-	public Category search(String categoryName) {
+	public Category searchByName(String categoryName) {
 		if (categories.containsKey(categoryName))
         	return categories.get(categoryName);                    //A category may be found at any level in this scheme
 
 		return null;
 	}
 
+
+	/**
+	 * For a given category identifier, finds the respective entry in the classification scheme
+	 * @param categoryId  The category identifier to search in the classification hierarchy. Category identifiers must be unique amongst all levels.
+	 * @return  The entry in the classification scheme representation corresponding to the given category
+	 */
+	public Category searchById(String categoryId) 
+	{
+		//Iterate through the dictionary and identify the item with the given id in the classification hierarchy
+		for (Category rs : categories.values()) 
+			if (rs.getId().equals(categoryId))
+				return rs;
+		
+		return null;
+	}
 	
 	/**
 	 * For a given category name, identifies its respective UUID in the classification scheme
@@ -351,6 +460,18 @@ public class Classification {
 		return null;
 	}
 	
+
+	/**
+	 * For a given category name, identifies its respective category in the embedded (default) classification scheme
+	 * @param categoryName  The category name to search in the user-defined classification hierarchy. Category names must be unique amongst all levels.
+	 * @return  The embedded category corresponding to that category in the user-defined classification scheme
+	 */
+	public String getEmbeddedCategory(String categoryName) {
+		if (categories.containsKey(categoryName))
+        	return categories.get(categoryName).getEmbedCategory();           //A category may be found at any level in this scheme
+
+		return null;
+	}
 	
 	/**
 	 * Returns the number of categories in the dictionary representation of the classification scheme
@@ -359,14 +480,22 @@ public class Classification {
 	public int countCategories() {
 		return categories.size();
 	}
-	
+
+	/**
+	 * Returns the depth, i.e., max number of levels in any path of the given multi-tier classification hierarchy
+	 * @return  Number of levels for a multi-tier classification hierarchy.
+	 */
+	public int countTiers() {
+		return numTiers;
+	}
+
 	
 	/**
-	 * Given a parent identifier, recursively finds all its descendants and print them in a YML-like fashion
+	 * Given a parent identifier, recursively find all its descendants and print them in a YML-like fashion
 	 * @param parent_id   Original identifier for the parent of a category
 	 * @param level  The level of the category in the classification scheme (0: top-tier)  
 	 */
-	private void findDescendants(String parent_id, int level) 
+	private void printDescendants(String parent_id, int level) 
 	{
 		//Iterate through the dictionary and type all descendants of a given item in the classification hierarchy
 		for (Category rs : categories.values()) 
@@ -375,12 +504,14 @@ public class Classification {
 			{
 				int lvl = level + 1;
 				//Print categories in a YML-like fashion:
-				for (int k=1; k < lvl; k++)
-					System.out.print(indent);                                      //Indentation character depending on the level
+				for (int k=1; k < lvl; k++) {
+					System.out.print(indent);System.out.print(indent);      //Indentation (two blank characters) for each extra level
+				}
 				System.out.println(rs.getName() + " " + splitter + rs.getId());	   //Special character before identifier
 				
 				//Recursion at the next level
-				findDescendants(rs.getId(), lvl);            
+				if (lvl < MAX_LEVELS)
+					printDescendants(rs.getId(), lvl);            
 			}		
 		}
 	}
@@ -397,10 +528,77 @@ public class Classification {
 			if (rs.getParent() == null)               //Top-tier categories do not have a parent
 			{
 				System.out.println(rs.getName() + " " + splitter + rs.getId());	   //Special character before identifier
-				findDescendants(rs.getId(), 1);
+				printDescendants(rs.getId(), 1);
 			}
 		}	
 	}
+	
 
+	  /**
+	   * Parses each item in the classification hierarchy and streamlines the resulting triples according to the given YML mapping. Applicable in STREAM transformation mode.
+	   */
+	  private void executeParser4Stream() {
+
+	    //System.out.println(myAssistant.getGMTime() + " Started processing features...");
+	    long t_start = System.currentTimeMillis();
+	    long dt = 0;
+	   
+	    int numRec = 0;
+	    int numTriples = 0;
+
+	    OutputStream outFile = null;
+		try {
+			outFile = new FileOutputStream(outputFile);
+		} 
+		catch (FileNotFoundException e) {
+		  ExceptionHandler.abort(e, "Output file not specified correctly.");
+		} 
+	  
+	    //CAUTION! Hard constraint: serialization into N-TRIPLES is only supported by Jena riot (stream) interface  
+	    StreamRDF stream = StreamRDFWriter.getWriterStream(outFile, Lang.NT);
+	    stream.start();                //Start issuing streaming triples
+	  		
+	    TripleGenerator myGenerator = new TripleGenerator(currentConfig, myAssistant);     //Will be used to generate all triples for each category
+		   
+		try {		   
+			//Iterate through all categories
+			for (Category rs : categories.values()) 
+			{
+		    	//Clean up any previous triples, in order to collect the new triples derived from the current feature
+				myGenerator.clearTriples();
+				
+//				System.out.println("CATEGORY: " + rs.printContents());
+
+				//Issue triples according to the attribute used for classification (id or name of categories) in the data
+				String val;
+				if (!classifyByName)
+					val = rs.getId();
+				else
+					val = rs.getName();
+	      		
+				//Pass attribute values to the generator in order to apply custom mapping(s) directly
+				//IMPORTANT! This export is currently customized for classification schemes conforming to the SLIPO ontology only
+				myGenerator.transformCategory2RDF(rs.getUUID(), val, findUUID(rs.getParent()));
+				
+				//Append each triple to the output stream 
+				for (int i = 0; i <= myGenerator.getTriples().size()-1; i++) {
+					stream.triple(myGenerator.getTriples().get(i));
+					numTriples++;
+				}
+		        
+		        numRec++;
+			}
+	    }
+		catch(Exception e) { 
+			ExceptionHandler.warn(e, "An error occurred during transformation of an input record.");
+		}
+
+		//Finally, store results collected in the disk-based RDF graph
+		stream.finish();               //Finished issuing triples
+		
+	    //Measure execution time
+		dt = System.currentTimeMillis() - t_start;
+	    myAssistant.reportStatistics(dt, numRec, 0, numTriples, currentConfig.serialization, myGenerator.getStatistics(), null, currentConfig.mode, null, outputFile, 0);
+	  }
 
 }

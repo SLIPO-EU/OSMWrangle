@@ -1,5 +1,5 @@
 /*
- * @(#) OsmCsvConverter.java 	 version 2.0   5/12/2019
+ * @(#) OsmRdfCsvStreamConverter.java  version 2.0   5/12/2019
  *
  * Copyright (C) 2013-2019 Information Management Systems Institute, Athena R.C., Greece.
  *
@@ -20,63 +20,76 @@ package eu.smartdatalake.athenarc.osmwrangle.utils;
 
 import java.io.BufferedWriter;
 import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Properties;
 import java.util.logging.Level;
+import java.util.Properties;
 
 import org.apache.commons.io.FilenameUtils;
 import org.apache.jena.graph.Triple;
+import org.apache.jena.riot.Lang;
+import org.apache.jena.riot.system.StreamRDF;
+import org.apache.jena.riot.system.StreamRDFWriter;
 import org.opengis.referencing.operation.MathTransform;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.locationtech.jts.geom.Envelope;
-import org.locationtech.jts.geom.Geometry;
 
 import eu.smartdatalake.athenarc.osmwrangle.osm.OSMRecord;
 
 
 /**
- * Provides a set of a streaming OSM records in memory that can be readily serialized into a CSV file.
- * CAUTION! This version also emits a .CSV output file that includes all tags identified in OSM (XML or PBF) files. 
- * DO NOT USE this version for transformation with other file formats.
+ * Provides a set of a streaming RDF triples in memory that can be readily serialized into a file.
+ * CAUTION! Only working on OSM (XML/PBF) data files. DO NOT USE this version for transformation with other file formats.
+ * Note: This version also emits a .CSV output file that includes all tags identified in OSM (XML or PBF) files. 
  * @author Kostas Patroumpas
- * @version 1.9
+ * @version 2.0
  */
 
 /* DEVELOPMENT HISTORY
- * Created by: Kostas Patroumpas, 26/9/2018
- * Modified by: Kostas Patroumpas, 27/9/2018
- * Last modified: 11/7/2019
+ * Created by: Kostas Patroumpas, 9/3/2013
+ * Modified by: Kostas Patroumpas, 27/9/2017
+ * Modified: 8/11/2017, added support for system exit codes on abnormal termination
+ * Modified: 19/12/2017, reorganized collection of triples using TripleGenerator
+ * Modified: 24/1/2018, included auto-generation of UUIDs for the URIs of features
+ * Modified: 7/2/2018, added support for exporting all available non-spatial attributes as properties
+ * Modified: 14/2/2018; integrated handling of OSM records
+ * Modified: 9/5/2018; integrated handling of GPX data 
+ * Modified: 31/5/2018; integrated handling of classifications for OSM data
+ * Modified: 18/4/2019; included support for spatial filtering over input datasets
+ * Modified: 30/5/2019; correct handling of NULL geometries in CSV input files
+ * Modified: 26/6/2019; added support for thematic filtering in geographical files
+ * Modified: 9/10/2019; issuing assigned category to the registry
+ * Last modified: 5/12/2019
  */
 
-public class OsmCsvConverter implements Converter {
+public class OsmRdfCsvStreamConverter implements Converter {
 
 	private static Configuration currentConfig;
 	
+	private List<Triple> results = new ArrayList<>();       //A collection of generated triples
+
+	private TripleGenerator myGenerator;                    //Generator of triples 
 	private Assistant myAssistant;							//Performs auxiliary operations (geometry transformations, auto-generation of UUIDs, etc.)
-	
-	String DELIMITER = "|";
-	
+
 	//Used in performance metrics
 	private long t_start;
 	private long dt;
 	private int numRec;            //Number of entities (records) in input dataset
 	private int rejectedRec;       //Number of rejected entities (records) from input dataset after filtering
 	private int numTriples;
-	 
-	public Envelope mbr;          //Minimum Bounding Rectangle (in WGS84) of all geometries handled during a given transformation process
-	
+	    
 	private BufferedWriter csvWriter = null;
-	  
-	Map<String, Integer> attrStatistics;   //Statistics for each attribute
-	
+	private OutputStream outFile = null;
+	private StreamRDF stream;
+
 	ObjectMapper mapperObj;
 
 	//Attribute Map
@@ -84,10 +97,10 @@ public class OsmCsvConverter implements Converter {
 	private ArrayList<String> cols = new ArrayList<String>();
 
 	public void ReadAttrMappingFile(Configuration config){
-		
-		//Read Mapping Config File for extra thematic columns
+
 		Properties properties = new Properties();
 		try {
+			//Read Mapping Config File.
 			properties.load(new FileInputStream(config.mapping_file));
 
 			for (Map.Entry<Object, Object> entry : properties.entrySet()) {
@@ -98,7 +111,6 @@ public class OsmCsvConverter implements Converter {
 					tagMap.put(value_parts[i].trim(), entry.getKey().toString());
 				}
 			}
-			
 		} catch (IOException io) {
 			System.out.println(Level.WARNING + " Problems loading configuration file: " + io);
 		}
@@ -112,23 +124,20 @@ public class OsmCsvConverter implements Converter {
 	}
 
 	/**
-	 * Constructs a OsmCsvConverter object that will conduct transformation at STREAM mode.	  	  
+	 * Constructs a StreamConverter object that will conduct transformation at STREAM mode.	  	  
 	 * @param config  User-specified configuration for the transformation process.
+	 * @param assist  Assistant to perform auxiliary operations.
 	 * @param outputFile  Output file that will collect resulting triples.
 	 */
-	public OsmCsvConverter(Configuration config, Assistant assist, String outputFile) {
+	public OsmRdfCsvStreamConverter(Configuration config, Assistant assist, String outputFile) {
 	  
 	    super();
 	    
 	    currentConfig = config;       //Configuration parameters as set up by the various conversion utilities (CSV, SHP, DB, etc.) 
 	    
 	    myAssistant = assist;
-	    attrStatistics = new HashMap<String, Integer>();
-	    
-		//Initialize MBR of transformed geometries
-		mbr = new Envelope();
-		mbr.init();
-		
+	    myGenerator = new TripleGenerator(config, assist);     //Will be used to generate all triples per input feature (record)
+
 	    mapperObj = new ObjectMapper();   //CAUTION! Only used in issuing tags for .CSV output
 		
 		//Read Mapping File and build Collection.
@@ -141,6 +150,14 @@ public class OsmCsvConverter implements Converter {
 	    rejectedRec = 0;
 		numTriples = 0;
 		
+		try {
+			outFile = new FileOutputStream(outputFile);
+		} 
+		catch (FileNotFoundException e) {
+		  ExceptionHandler.abort(e, "Output file not specified correctly.");
+		} 
+		  
+	    //******************************************************************
 	    //Specify the output .CSV file that will collect the resulting tuples after extraction from OSM
 	    try
 	    {
@@ -151,20 +168,27 @@ public class OsmCsvConverter implements Converter {
 	    catch (Exception e) {
 			 ExceptionHandler.abort(e, "Output CSV file not specified correctly.");
 	    }
+	    //******************************************************************
+	    	    
+		//CAUTION! Hard constraint: serialization into N-TRIPLES is only supported by Jena riot (stream) interface  
+		stream = StreamRDFWriter.getWriterStream(outFile, Lang.NT);
+		stream.start();             //Start issuing streaming triples
 	}
 
+	
 	
 	/**
 	 * Provides triples resulted after applying transformation against a single input feature or a small batch of features.
+	 * Applicable in STREAM transformation mode.
+	 * @return A collection of RDF triples.
 	 */
 	public List<Triple> getTriples() {
 	  
-		return null;  
+		return results;  
 	}
 
-	
 	/**
-	 * Parses a single OSM record and streamlines the resulting records (including geometric and non-spatial attributes).
+	 * Parses a single OSM record and streamlines the resulting triples (including geometric and non-spatial attributes).
 	 * Applicable in STREAM transformation mode.
 	 * Input provided as an individual record. This method is used for input from OpenStreetMap XML/PBF files.
 	 * @param myAssistant  Instantiation of Assistant class to perform auxiliary operations (geometry transformations, auto-generation of UUIDs, etc.)
@@ -193,8 +217,8 @@ public class OsmCsvConverter implements Converter {
 				lat = myAssistant.getLatitude(rs.getGeometry());
 				
 				wkt = rs.getGeometry().toText();       //Get WKT representation	
-				if (wkt != null)
-				{	
+				if (!myAssistant.filterContains(wkt))
+				{				
 					//Apply spatial filtering (if specified by user)
 					if (!myAssistant.filterContains(wkt))
 					{
@@ -202,9 +226,6 @@ public class OsmCsvConverter implements Converter {
 						return;
 					}
 				
-					//Update spatial extent (MBR) of the transformed data with this geometry
-					updateMBR(rs.getGeometry());				
-					
 					//CRS transformation
 			      	if (reproject != null)
 			      		wkt = myAssistant.wktTransform(wkt, reproject);     //Get transformed WKT representation
@@ -215,7 +236,6 @@ public class OsmCsvConverter implements Converter {
 			else 
 			{
 				rejectedRec++;
-//				System.out.println(rs.getID() + " has null geometry.");
 				return;
 			}
 
@@ -246,11 +266,12 @@ public class OsmCsvConverter implements Converter {
 	      		else
 	      			attrValues.put("OSM_Category", rs.getCategory());  //Ad-hoc name for this extra attribute
 	      	}
-		    else {
+	      	else {
 				rejectedRec++;
 	      		return;          //CAUTION! Do not proceed to transform unless this feature complies with the filtering tags specified by the user
 			}
-			
+ 
+	      	//*********************************CSV specific****************************
 			//Process all tags and distinguish attribute values to export to CSV
 			ArrayList<String> outArr = new ArrayList<String>();
 			outArr.add(rs.getID());
@@ -261,10 +282,6 @@ public class OsmCsvConverter implements Converter {
 			outArr.add(Integer.toString(targetSRID));
 			outArr.add(rs.getGeometry().toText());
 
-			// Update statistics for names
-			if (rs.getName() != null)
-				updateStatistics("NAME");
-			
 			Map tagMapRec = new HashMap<String, String>();
 			for (int i=0; i < cols.size(); i++){
 				tagMapRec.put(cols.get(i), "");
@@ -290,66 +307,57 @@ public class OsmCsvConverter implements Converter {
 
 			for (int i=0; i < cols.size(); i++){
 				outArr.add(formatString(tagMapRec.get(cols.get(i)).toString()));
-				// Update statistics
-				if (tagMapRec.get(cols.get(i)) != "")
-					updateStatistics(cols.get(i));
 			}
-			
+
 			String othertags = formatString(mapperObj.writeValueAsString(rs.getTagKeyValue()));
 			outArr.add(othertags);
 
 			csvWriter.write(String.join("|", outArr));
 			csvWriter.newLine();
-
+			//***************************************************************************
+	
+	      	//Process all available non-spatial attributes as specified in the collected (tag,value) pairs	
+	        //... including a classification hierarchy from the OSM tags used in filtering
+			String uri = myGenerator.transform(attrValues, wkt, targetSRID, classific);
+  
 		    //Periodically, collect RDF triples resulting from this batch and dump results into output file
 			if (numRec % currentConfig.batch_size == 0) 
 			{
+				collectTriples();
 				myAssistant.notifyProgress(numRec);
 			}		
 				
 		} catch (Exception e) {
 			System.out.println("Problem at element with OSM id: " + rs.getID() + ". Excluded from transformation.");
+		}	
+		finally {
+			collectTriples();     //Dump any pending results into output file
 		}
-		
 	}
 	
+	
 
-
-	  /**
-	   * Update statistics (currently only a counter) of values transformed for a particular attribute
-	   * @param attrKey  The name of the attribute
-	   */
-	  private void updateStatistics(String attrKey) {
-		  
-			if ((attrStatistics.get(attrKey)) == null)
-				attrStatistics.put(attrKey, 1);                                  //First occurrence of this attribute
-			else
-				attrStatistics.replace(attrKey, attrStatistics.get(attrKey)+1);  //Update count of NOT NULL values for this attribute
-	  }
-	  
-		/**
-		 * Updates the MBR of the geographic dataset as this is being transformed. 	
-		 * @param g  Geometry that will be checked for possible expansion of the MBR of all features processed thus far
-		 */
-		public void updateMBR(Geometry g) {
+	/**
+	 * Collects RDF triples generated from a batch of features (their thematic attributes and their geometries) and streamlines them to output file.
+	 */
+	private void collectTriples() 
+	{
+		try {	        		
+			//Append each triple to the output stream 
+			for (int i = 0; i <= myGenerator.getTriples().size()-1; i++) {
+				stream.triple(myGenerator.getTriples().get(i));
+				numTriples++;
+			}
 			
-			Envelope env = g.getEnvelopeInternal();          //MBR of the given geometry
-			if ((mbr== null) || (mbr.isNull()))
-				mbr = env;
-			else if (!mbr.contains(env))
-				mbr.expandToInclude(env);                    //Expand MBR is the given geometry does not fit in
+			//Clean up RDF triples, in order to collect the new ones derived from the next batch of features
+			myGenerator.clearTriples();	
 		}
+		catch(Exception e) { 
+			ExceptionHandler.warn(e, "An error occurred during transformation of an input record.");
+		}	
+	}
 		
-		/**
-		 * Provides the MBR of the geographic dataset that has been transformed.
-		 * @return  The MBR of the transformed geometries.
-		 */
-		public Envelope getMBR() {
-			if ((mbr == null) || (mbr.isNull()))
-				return null;
-			return mbr;
-		}
-		
+
 	/**
 	 * Finalizes storage of resulting tuples into a file.	
 	 * @param myAssistant  Instantiation of Assistant class to perform auxiliary operations (geometry transformations, auto-generation of UUIDs, etc.)
@@ -357,6 +365,8 @@ public class OsmCsvConverter implements Converter {
 	 */	
 	public void store(String outputFile) 
 	{
+		stream.finish();               //Finished issuing triples
+		
 		//******************************************************************
 		//Close the file that will collect all CSV tuples
 		try {
@@ -369,7 +379,7 @@ public class OsmCsvConverter implements Converter {
 		
 	    //Measure execution time and issue statistics on the entire process
 	    dt = System.currentTimeMillis() - t_start;
-	    myAssistant.reportStatistics(dt, numRec, rejectedRec, numTriples, "CSV", attrStatistics, getMBR(), currentConfig.mode, currentConfig.targetCRS, FilenameUtils.removeExtension(outputFile) + ".csv", 0);
+	    myAssistant.reportStatistics(dt, numRec, rejectedRec, numTriples, currentConfig.serialization, myGenerator.getStatistics(), myGenerator.getMBR(), currentConfig.mode, currentConfig.targetCRS, outputFile, 0);
 	}
-
+	  
 }

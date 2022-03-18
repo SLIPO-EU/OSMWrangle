@@ -1,5 +1,5 @@
 /*
- * @(#) OsmRecordBuilder.java	version 1.7   24/10/2018
+ * @(#) OsmRecordBuilder.java	version 2.0   24/10/2018
  *
  * Copyright (C) 2013-2019 Information Management Systems Institute, Athena R.C., Greece.
  *
@@ -24,19 +24,19 @@ import java.util.Map;
 
 import org.apache.commons.lang3.tuple.ImmutablePair;
 
-import com.vividsolutions.jts.geom.Geometry;
-import com.vividsolutions.jts.geom.GeometryCollection;
-import com.vividsolutions.jts.geom.GeometryFactory;
-import com.vividsolutions.jts.geom.LineString;
-import com.vividsolutions.jts.geom.LinearRing;
-import com.vividsolutions.jts.geom.MultiPolygon;
-import com.vividsolutions.jts.geom.Polygon;
-import com.vividsolutions.jts.operation.linemerge.LineMerger;
+import org.locationtech.jts.geom.Geometry;
+import org.locationtech.jts.geom.GeometryCollection;
+import org.locationtech.jts.geom.GeometryFactory;
+import org.locationtech.jts.geom.LineString;
+import org.locationtech.jts.geom.LinearRing;
+import org.locationtech.jts.geom.MultiPolygon;
+import org.locationtech.jts.geom.Polygon;
+import org.locationtech.jts.operation.linemerge.LineMerger;
 
 /**
  * Creates OSM record objects that contain all geospatial and thematic information from OSM elements (nodes, ways, relations).
  * @author Kostas Patroumpas
- * @version 1.7
+ * @version 2.0
  */
 
 /* DEVELOPMENT HISTORY
@@ -86,7 +86,7 @@ public class OSMRecordBuilder {
 	   * @param filter  Correspondence of OSM tags into categories.
 	   * @param tags  Key-value pairs for OSM tags and their respective values for a given feature.
 	   * @param key  Tag at any level in the classification hierarchy.
-	   * @return
+	   * @return  The name of the corresponding category.
 	   */
 	  private static String getCategoryRecursive(OSMFilter filter, Map<String, String> tags, String key) {
 			//Use key of parent rule or current
@@ -124,7 +124,7 @@ public class OSMRecordBuilder {
 		OSMRecord rec = new OSMRecord();
 	  	rec.setID("node/" + n.getID());
 	  	rec.setType(n.getTagKeyValue().get("type"));
-	  	rec.setName(n.getTagKeyValue().get("name"));
+		rec.setName((n.getTagKeyValue().get("name") == null ? "" : n.getTagKeyValue().get("name")));
 	  	rec.setGeometry(n.getGeometry());
 	  	rec.setTags(n.getTagKeyValue());
 	  	if (filters != null)
@@ -141,11 +141,11 @@ public class OSMRecordBuilder {
      * @return  An OSMRecord object as a record with specific attributes extracted from the OSM way.
      */
     public OSMRecord createOSMRecord(OSMWay w) {
-  
+
 		OSMRecord rec = new OSMRecord();
 	  	rec.setID("way/" + w.getID());
 	  	rec.setType(w.getTagKeyValue().get("type"));
-	  	rec.setName(w.getTagKeyValue().get("name"));
+	  	rec.setName((w.getTagKeyValue().get("name") == null ? "" : w.getTagKeyValue().get("name")));
 	  	rec.setGeometry(w.getGeometry());
 	  	rec.setTags(w.getTagKeyValue());
 	  	if (filters != null)
@@ -199,7 +199,7 @@ public class OSMRecordBuilder {
   		OSMRecord rec = new OSMRecord();
     	rec.setID("relation/" + r.getID());
     	rec.setType(r.getTagKeyValue().get("type"));
-    	rec.setName(r.getTagKeyValue().get("name"));
+		rec.setName((r.getTagKeyValue().get("name") == null ? "" : r.getTagKeyValue().get("name")));
     	rec.setTags(r.getTagKeyValue());
     	if (filters != null)
     		rec.setCategory(getCategory(r.getTagKeyValue()));   //Search among the user-specified filters in order to assign a category to this OSM feature
@@ -213,7 +213,7 @@ public class OSMRecordBuilder {
     	try {
 			if (r.getTagKeyValue().get("type") != null)
 			{
-				if  (r.getTagKeyValue().get("type").equalsIgnoreCase("multilinestring"))  // || (r.getTagKeyValue().get("type").equalsIgnoreCase("route"))
+				if ((r.getTagKeyValue().get("type").equalsIgnoreCase("multilinestring")) || (r.getTagKeyValue().get("type").equalsIgnoreCase("route")))
 				{   //Create a MultiLineString for OSM relation features that are either a 'multilinestring' or a 'route'
 					LineString[] memberGeometries = new LineString[r.getMemberReferences().size()];
 					int numMembers = 0;
@@ -225,10 +225,10 @@ public class OSMRecordBuilder {
 	    				if (tmpWay != null)
     	    			{
 	    					//If this member is a polygon, then convert it into a linestring first
-	    					if (tmpWay.getClass() == com.vividsolutions.jts.geom.Polygon.class) {
+	    					if (tmpWay.getClass() == org.locationtech.jts.geom.Polygon.class) {
 	    						tmpWay = ((Polygon) tmpWay).getExteriorRing();
 	    					}
-	    					if (tmpWay.getClass() == com.vividsolutions.jts.geom.Point.class) {
+	    					if (tmpWay.getClass() == org.locationtech.jts.geom.Point.class) {
 	    						System.out.println("OSM element " + member.getKey() + " is a point! " + tmpWay.toText());
 	    					}
 	    					memberGeometries[numMembers] = (LineString) tmpWay;     //Reference to OSMWay geometry
@@ -258,16 +258,14 @@ public class OSMRecordBuilder {
 					for (Map.Entry<String, ImmutablePair<String, String>> member : r.getMemberReferences().entrySet())   //Handle ways       
     	    		{	
 						Geometry tmpWay = wayIndex.get(member.getKey());
-
     	    			if (tmpWay != null)
     	    			{
-    	    				if (tmpWay.getClass() == com.vividsolutions.jts.geom.Polygon.class)
+    	    				if (tmpWay.getClass() == org.locationtech.jts.geom.Polygon.class)
     	    				{
     	    					if (member.getValue().getValue().equalsIgnoreCase("inner"))     
     		    				{ 
     	    						innerRings[numInnerRings] = (LinearRing) ((Polygon) tmpWay).getExteriorRing();        //This OSMWay geometry is a complete inner ring
-    	    						numInnerRings++;
-    	    						
+    	    						numInnerRings++;		
     		    				}
     	    					else //if (member.getValue().getValue().equalsIgnoreCase("outer"))                                  //Outer may not always be specified for such OSM entity!
     	    					{
@@ -275,7 +273,7 @@ public class OSMRecordBuilder {
 			    					numOuterRings++;	
     	    					}
     	    				}
-    	    				else if (tmpWay.getClass() == com.vividsolutions.jts.geom.LineString.class) 
+    	    				else if (tmpWay.getClass() == org.locationtech.jts.geom.LineString.class) 
     	    				{     	    				
     	    					if (((LineString) tmpWay).isClosed()) {
     	    						if (member.getValue().getValue().equalsIgnoreCase("inner")) 
@@ -314,7 +312,7 @@ public class OSMRecordBuilder {
     	    						}						
     	    					}
 		    				}
-    	    				else if (tmpWay.getClass() == com.vividsolutions.jts.geom.LinearRing.class)
+    	    				else if (tmpWay.getClass() == org.locationtech.jts.geom.LinearRing.class)
     	    				{
     	    					if (member.getValue().getValue().equalsIgnoreCase("inner"))
     		    				{ 
@@ -325,11 +323,11 @@ public class OSMRecordBuilder {
     	    					else //if (member.getValue().getValue().equalsIgnoreCase("outer"))     //Outer may not always be explicitly specified for such OSM entity!
     	    					{
 	    	    					outerRings[numOuterRings] = (LinearRing) tmpWay;        //Reference to OSMWay geometry
-			    					numOuterRings++;	
+			    					numOuterRings++;
     	    					}
     	    				}
 //    	    				else
-//    	    					System.out.println(rec.getID() + ": Geometry is neither a LINESTRING nor a POLYGON! " + tmpWay.toString());
+//   	    					System.out.println(rec.getID() + ": Geometry is neither a LINESTRING nor a POLYGON! " + tmpWay.toString());
     	    			}
     	    		}
 					
@@ -386,7 +384,7 @@ public class OSMRecordBuilder {
 				}
 			}
 			
-			if (rec.getGeometry() == null)   //For any other type of OSM relations, create a geometry collection
+			if ((rec.getGeometry() == null) || (rec.getGeometry().isEmpty()))  //For any other type of OSM relations, create a geometry collection
 			{
 				Geometry[] memberGeometries = new Geometry[r.getMemberReferences().size()];
 				int numMembers = 0;
@@ -394,17 +392,17 @@ public class OSMRecordBuilder {
 				for (Map.Entry<String, ImmutablePair<String, String>> member : r.getMemberReferences().entrySet())    
 	    		{	
 					String k = member.getKey();
-	    			if ((member.getValue().getKey().equals("way")) && (wayIndex.get(k) != null))              //Handle ways
+	    			if ((member.getValue().getKey().equalsIgnoreCase("way")) && (wayIndex.get(k) != null))              //Handle ways
 	    			{
 		    				memberGeometries[numMembers] = wayIndex.get(k);     //Reference to OSMWay geometry
 		    				numMembers++;
 	    			}
-	    			else if ((member.getValue().getKey().equals("node")) && (nodeIndex.get(k) != null))     	//Handle nodes
+	    			else if ((member.getValue().getKey().equalsIgnoreCase("node")) && (nodeIndex.get(k) != null))     	//Handle nodes
 	    			{	
 							memberGeometries[numMembers] = nodeIndex.get(k);    //Reference to OSMNode geometry
 		    				numMembers++;
 	    			}
-	    			else if ((member.getValue().getKey().equals("relation")) && (relationIndex.get(k) != null))     	//Handle relations
+	    			else if ((member.getValue().getKey().equalsIgnoreCase("relation")) && (relationIndex.get(k) != null))     	//Handle relations
 	    			{	
 							memberGeometries[numMembers] = relationIndex.get(k);    //Reference to OSMRelation geometry
 		    				numMembers++;
@@ -434,8 +432,8 @@ public class OSMRecordBuilder {
 			}
 
     	} catch (Exception e) {
-    		System.out.print("PROBLEM at " + rec.getID() + ". REASON: ");
-			e.printStackTrace();
+    		System.out.println("PROBLEM at " + rec.getID() + ". REASON: " + e.toString());
+//			e.printStackTrace();
 		}
 /*
         //Diagnostics regarding null or invalid geometries
@@ -450,6 +448,5 @@ public class OSMRecordBuilder {
 */   	
     	return rec;
     }
-
-    
+ 
 }

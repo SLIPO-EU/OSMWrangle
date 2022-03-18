@@ -1,5 +1,5 @@
 /*
- * @(#) OsmClassification.java	version 1.8   2/5/2019
+ * @(#) OsmClassification.java	version 2.0   24/10/2018
  *
  * Copyright (C) 2013-2019 Information Management Systems Institute, Athena R.C., Greece.
  *
@@ -25,20 +25,22 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Set;
 
+import org.apache.commons.io.FilenameUtils;
+
 import eu.smartdatalake.athenarc.osmwrangle.utils.ExceptionHandler;
 
 /**
  * Given a YAML file with OSM tags and their correspondence to categories/subcategories, it creates a representation of a hierarchical classification scheme.
  * LIMITATION: The resulting classification scheme is stored in an intermediate CSV file. 
  * @author Kostas Patroumpas
- * @version 1.8
+ * @version 2.0
  */
 
 /* DEVELOPMENT HISTORY
  * Created by: Kostas Patroumpas, 7/9/2017
  * Modified: 7/9/2017; added filters for tags in order to assign categories to extracted OSM features according to a user-specified classification scheme (defined in a YAML file).
  * Modified: 24/10/2018; allowing transformation to proceed even in case that no filters (using OSM tags) have been specified; no classification scheme will be used in this case.
- * Last modified by: Kostas Patroumpas, 2/5/2019
+ * Last modified by: Kostas Patroumpas, 24/10/2018
  */
 public class OSMClassification {
 
@@ -55,10 +57,9 @@ public class OSMClassification {
 	 * @param outDir   Directory that will hold the intermediate representation of the classification scheme, as will be used during transformation.
 	 */
 	public OSMClassification(String classSpec, String outDir) {
-		
 		classificationSpec = classSpec;
 		outputDir = outDir;
-		classFile = outputDir + "/categories.csv";
+		classFile = outputDir + FilenameUtils.getBaseName(classificationSpec) + ".csv";
 	}
 	
 	/**

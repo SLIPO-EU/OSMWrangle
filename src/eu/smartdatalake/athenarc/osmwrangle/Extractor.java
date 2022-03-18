@@ -1,5 +1,5 @@
 /*
- * @(#) Extractor.java	version 1.8  2/5/2019
+ * @(#) Extractor.java	version 2.0   5/12/2019
  *
  * Copyright (C) 2013-2019 Information Management Systems Institute, Athena R.C., Greece.
  *
@@ -28,15 +28,15 @@ import eu.smartdatalake.athenarc.osmwrangle.utils.Classification;
 import eu.smartdatalake.athenarc.osmwrangle.utils.Configuration;
 import eu.smartdatalake.athenarc.osmwrangle.utils.Constants;
 import eu.smartdatalake.athenarc.osmwrangle.utils.ExceptionHandler;
-import eu.smartdatalake.athenarc.osmwrangle.tools.OsmXmlToRdf;
-import eu.smartdatalake.athenarc.osmwrangle.tools.OsmPbfToRdf;
+import eu.smartdatalake.athenarc.osmwrangle.tools.OsmXmlParser;
+import eu.smartdatalake.athenarc.osmwrangle.tools.OsmPbfParser;
 
 /**
  * Entry point to OSMWrangle for converting spartial features extracted from OpenStreetMap files (either XML or PBF formats) into CSV
  * Execution command over JVM:
- *         JVM:   java -cp target/osmwrangle-1.8-SNAPSHOT.jar eu.smartdatalake.athenarc.osmwrangle.Extractor  <path-to-configuration-file>
+ *         JVM:   java -cp target/osmwrangle-2.0-SNAPSHOT.jar eu.smartdatalake.athenarc.osmwrangle.Extractor <path-to-configuration-file>
  * @author Kostas Patroumpas
- * @version 1.8
+ * @version 2.0
  */
 
 /* DEVELOPMENT HISTORY
@@ -47,7 +47,7 @@ import eu.smartdatalake.athenarc.osmwrangle.tools.OsmPbfToRdf;
  * Modified: 12/2/2018; handling missing specifications on georeferencing (CRS: Coordinate Reference Systems) 
  * Modified: 13/7/2018; advanced handling of interrupted or aborted tasks
  * Modified: 30/4/2019; simplified execution for extracting OSM features into CSV file
- * Last modified: 2/5/2019
+ * Last modified: 4/3/2022
  */
 public class Extractor {
 
@@ -76,6 +76,12 @@ public class Extractor {
 
 	    	//Specify a configuration file with properties used in the conversion
 	    	currentConfig = new Configuration(args[0]);          //Argument like "./bin/shp_options.conf"
+
+	    	//Default conversion mode: (in-memory) STREAM
+			currentConfig.mode = "STREAM";
+				
+			//Force N-TRIPLES serialization since the STREAM mode is aplied
+			//currentConfig.serialization = "N-TRIPLES";
 	    	
 	    	myAssistant =  new Assistant(currentConfig);
 	    	
@@ -85,26 +91,25 @@ public class Extractor {
 			if (currentConfig.inputFiles != null)
 			{
 				inFile = currentConfig.inputFiles;                                                  //A SINGLE input OSM file name must be specified
-				outFile = currentConfig.outputDir + FilenameUtils.getBaseName(inFile) + ".csv";     //CAUTION! Output file is always in CSV format
+				outFile = currentConfig.outputDir + FilenameUtils.getBaseName(inFile) + ".nt";     //CAUTION! Output file for RDF triples is in NT; another one will be always created in CSV format
 			}
 			else {
 				throw new IllegalArgumentException(Constants.INCORRECT_SETTING);
 			}
-						
+				
 			sourceSRID = 0;                                   //Non-specified, so...
 			System.out.println(Constants.WGS84_PROJECTION);   //... all features are assumed in WGS84 lon/lat coordinates
 			
-
 			long start = System.currentTimeMillis();
 			try {		
 				//Apply data transformation according to the given input format
 				if (inFile.toUpperCase().trim().endsWith("OSM")) {        	//OpenStreetMap data in XML format
-					OsmXmlToRdf conv = new OsmXmlToRdf(currentConfig, inFile, outFile, sourceSRID, targetSRID);
+					OsmXmlParser conv = new OsmXmlParser(currentConfig, inFile, outFile, sourceSRID, targetSRID);
 					conv.apply();
 					failure = false;
 				}
 				else if (inFile.toUpperCase().trim().endsWith("PBF")) {		//OpenStreetMap data in PBF format
-					OsmPbfToRdf conv = new OsmPbfToRdf(currentConfig, inFile, outFile, sourceSRID, targetSRID);
+					OsmPbfParser conv = new OsmPbfParser(currentConfig, inFile, outFile, sourceSRID, targetSRID);
 					conv.apply();
 					conv.close();
 					failure = false;
@@ -125,8 +130,7 @@ public class Extractor {
 				}
 				else {
 					System.out.println(myAssistant.getGMTime() + String.format(" Transformation process concluded successfully in %d ms.", elapsed));
-					System.out.println("RDF results written into the following output files:" + outFile);
-					//myAssistant.mergeFiles(outputFiles, "./test/output/merged_output.rdf");
+					System.out.println("Results written in this directory:" + currentConfig.outputDir);
 					System.exit(0);          //Execution completed successfully
 				}
 			}		    

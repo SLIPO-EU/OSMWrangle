@@ -1,5 +1,5 @@
 /*
- * @(#) OSMDiskIndex.java 	 version 1.7   11/7/2018
+ * @(#) OSMDiskIndex.java 	 version 2.0   11/7/2018
  *
  * Copyright (C) 2013-2019 Information Management Systems Institute, Athena R.C., Greece.
  *
@@ -19,10 +19,10 @@
 
 package eu.smartdatalake.athenarc.osmwrangle.osm;
 
-import com.vividsolutions.jts.geom.Geometry;
-import com.vividsolutions.jts.io.ParseException;
-import com.vividsolutions.jts.io.WKBReader;
-import com.vividsolutions.jts.io.WKBWriter;
+import org.locationtech.jts.geom.Geometry;
+import org.locationtech.jts.io.ParseException;
+import org.locationtech.jts.io.WKBReader;
+import org.locationtech.jts.io.WKBWriter;
 import java.util.Map;
 
 import org.mapdb.*;
@@ -30,7 +30,7 @@ import org.mapdb.*;
 /**
  * Support for disk-based indexing of OSM elements.
  * @author Kostas Patroumpas
- * @version 1.7
+ * @version 2.0
  */
 
 /* DEVELOPMENT HISTORY
@@ -80,7 +80,7 @@ public class OSMDiskIndex implements OSMIndex {
                 .fileMmapEnable()
                 .fileMmapEnableIfSupported()        //Activate mmap files only if a 64bit platform is detected
                 .fileMmapPreclearDisable()
-                .cleanerHackEnable()                //Release resources when file is closed. May cause JVM crash if file is accessed after it was unmapped.
+                .cleanerHackEnable()                // Release resources when file is closed. May cause JVM crash if file is accessed after it was unmapped.
                 .closeOnJvmShutdown()
                 .fileDeleteAfterClose()             //Indices will be destroyed upon termination
                 .make();  

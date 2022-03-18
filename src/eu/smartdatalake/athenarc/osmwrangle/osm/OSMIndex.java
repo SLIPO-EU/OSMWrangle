@@ -1,5 +1,5 @@
 /*
- * @(#) OSMIndex.java 	 version 1.7   11/7/2018
+ * @(#) OSMIndex.java 	 version 2.0   11/7/2018
  *
  * Copyright (C) 2013-2019 Information Management Systems Institute, Athena R.C., Greece.
  *
@@ -20,12 +20,12 @@ package eu.smartdatalake.athenarc.osmwrangle.osm;
 
 import java.util.Map;
 
-import com.vividsolutions.jts.geom.Geometry;
+import org.locationtech.jts.geom.Geometry;
 
 /**
  * Interface for indexing of OSM elements.
  * @author Kostas Patroumpas
- * @version 1.7
+ * @version 2.0
  */
 
 /* DEVELOPMENT HISTORY

@@ -1,5 +1,5 @@
 /*
- * @(#) OSMRecord.java 	 version 1.7   24/2/2018
+ * @(#) OSMRecord.java 	 version 2.0   24/2/2018
  *
  * Copyright (C) 2013-2019 Information Management Systems Institute, Athena R.C., Greece.
  *
@@ -18,14 +18,14 @@
  */
 package eu.smartdatalake.athenarc.osmwrangle.osm;
 
-import com.vividsolutions.jts.geom.Geometry;
+import org.locationtech.jts.geom.Geometry;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
  * Class containing information about the OSM records (nodes, ways, or relations).
  * @author Kostas Patroumpas
- * @version 1.7
+ * @version 2.0
  */
 
 /* DEVELOPMENT HISTORY
@@ -41,8 +41,8 @@ public class OSMRecord {
 	private String type;
 	private String category;
     private Geometry geometry;
-	private final Map<String, String> tags = new HashMap<>();
-
+	private final Map<String, String> tags = new HashMap<>(); 
+    
     //Attribute getters
 	/**
 	 * Provides the identifier of an OSM feature (node, way, or relation).
@@ -148,5 +148,6 @@ public class OSMRecord {
      */
     public void setTags(Map<String, String> tags){
         this.tags.putAll(tags);
+		this.tags.remove("name");   // Already kept separately
     }
 }
