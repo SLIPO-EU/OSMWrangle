@@ -163,7 +163,7 @@ railway=
     station=subway TRANSPORT_SUBWAY
   =tram_stop TRANSPORT_TRAMSTOP
    
-shop= SHOP_DEPARTMENTSTORE
+shop=   
   =alcohol SHOP_ALCOHOL
   =antiques SHOP_ART
   =appliance SHOP_APPLIANCE
